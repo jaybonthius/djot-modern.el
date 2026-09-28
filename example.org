@@ -1,0 +1,91 @@
+* A quieter page
+
+Org stays Org. Edit the markers, select a sentence, copy the source, or toggle org-modern-mode to compare the original display.
+
+** Words with texture
+
+A little /emphasis/, a *strong* opinion, a *highlight*, an _addition_, and a +deletion+. Water is H_{2}O and a square is x^{2}. Inline =code *stays literal*= and \(x + y\) keep their punctuation.
+
+Visit [[https://djot.net][the Djot reference]] or https://djot.net. A quiet span carries attributes in Djot; Org has no direct equivalent.
+
+** Small commitments
+
+- Read the page
+- [X] Keep source editable
+- [ ] Choose a favorite theme
+
+1. Start with a plain buffer.
+2. Enable the minor mode.
+3. Toggle back whenever you need to.
+
+- A parent item
+
+  - A nested bullet
+  - Another detail
+
+- term :: A definition stays close to its name.
+
+** A borrowed thought
+
+#+begin_quote
+Good typography gives the words room.
+
+- It does not rewrite them.
+- It does not hide what you are editing.
+#+end_quote
+
+*** Working notes continued on a second line
+
+The heading hierarchy is deliberately small.
+
+**** A detail
+
+***** A quieter detail
+
+****** The smallest heading level
+
+** Code, not decoration
+
+#+begin_src emacs-lisp
+(defun greet (name)
+  "Return a friendly greeting."
+  (format "Hello, %s!" name))
+;; # Not a heading
+;; *Not strong* and | not a table |
+#+end_src
+
+#+begin_example
+A fence may contain ``` shorter backticks.
+- [x] This is still literal text.
+#+end_example
+
+#+begin_export html
+<span>*Raw text* is opaque.</span>
+#+end_export
+
+#+begin_note
+This div has a compact label and a quiet frame.
+#+end_note
+
+** A modest table
+
+#+caption: Aligned source and thin, padded presentation.
+| Element | Purpose          |
+|---------+------------------|
+| Heading | A place to begin |
+| x\vert{}y     | A literal pipe   |
+| a\vert{}b     | An escaped pipe  |
+
+-----
+
+** Literal punctuation
+
+Literal =*stars*= and =_underscores_= stay plain. A vertical bar is ordinary text: |. =# headings= do not appear inside verbatim text.
+
+A reference [[https://djot.net][link]] and a footnote[fn:note] remain readable source.
+
+[fn:note] This is a footnote, not a popup.
+
+** Work in progress
+
+An *unfinished delimiter is ordinary editing, not an error dialog.

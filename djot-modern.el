@@ -1,9 +1,11 @@
-;;; djot-modern.el --- Quiet, editable Djot typography -*- lexical-binding: t; -*-
+;;; djot-modern.el --- Modern presentation for Djot -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2026 Jay Bonthius
+;; Copyright (C) 2022-2026 Free Software Foundation, Inc.
 ;; Author: Jay Bonthius
-;; Version: 0.1.0
-;; Package-Requires: ((emacs "29.1"))
+;; Version: 0.2.0
+;; Package-Requires: ((emacs "30.1") (djot-mode "0.1.0"))
+;; URL: https://github.com/jaybonthius/djot-modern.el
 ;; Keywords: text, faces
 ;; SPDX-License-Identifier: GPL-3.0-or-later
 
@@ -20,326 +22,534 @@
 
 ;;; Commentary:
 
-;; A presentation minor mode for Djot, inspired by org-modern.  Requires
-;; the tree-sitter-djot grammar, not a particular major mode.  Enable in
-;; a text-mode or djot-ts-mode buffer with M-x djot-modern-mode.
-;; Source remains visible and editable; only structural markers receive
-;; display replacements.  No parser installation or file association is
-;; performed automatically.  See README.org for setup and limitations.
+;; Optional typography for `djot-mode'.  Enable locally with
+;; `djot-modern-mode', through `djot-mode-hook', or explicitly enable
+;; `global-djot-modern-mode'.  No automatic global activation occurs.
+;; Parsing, concealment, links, native source highlighting and editing
+;; belong to djot-mode and continue working when this mode is disabled.
+;;
+;; Thin table rules (inverse-video stretch spaces and compressed rule
+;; rows), block fringe bitmaps and opt-in activation follow Daniel
+;; Mendler's org-modern.el (GPL-3.0-or-later).  Unlike org-modern's Org
+;; font-lock integration, this package uses the base mode's semantic
+;; hook and its own removable overlays; it never replaces font-lock rules.
 
 ;;; Code:
 
 (require 'cl-lib)
-(require 'font-lock)
-(require 'treesit)
+(require 'color)
+(require 'face-remap)
 (require 'subr-x)
+(require 'djot-mode)
+
+(declare-function fringe-bitmap-p "fringe" (bitmap))
+(declare-function define-fringe-bitmap "fringe" (bitmap bits &optional height width align))
 
 (defgroup djot-modern nil
-  "Quiet, editable Djot typography."
-  :group 'text :group 'faces)
+  "Modern presentation for Djot."
+  :group 'djot :group 'faces :prefix "djot-modern-")
 
+(defcustom djot-modern-prose-face 'variable-pitch
+  "Face for body text, or nil to preserve the buffer's body font.
+Technical text always uses `djot-modern-fixed-pitch'.  No font family
+is chosen by this package.  Customize `variable-pitch' and `fixed-pitch'
+in your theme or init.  Re-enable the mode after changing options."
+  :type '(choice (const nil) face) :group 'djot-modern)
+(defcustom djot-modern-line-spacing 0.15
+  "Extra line spacing, or nil to retain the existing buffer setting."
+  :type '(choice (const nil) number) :group 'djot-modern)
 (defcustom djot-modern-headings t
-  "Style headings with a size hierarchy and compact markers."
+  "Style headings with level-specific theme faces and scales."
   :type 'boolean :group 'djot-modern)
+(defcustom djot-modern-heading-stars '("◉" "○" "◈" "◇" "✳" "·")
+  "Heading glyphs, from level one; deeper levels use the last glyph.
+Nil retains the source markers."
+  :type '(repeat string) :group 'djot-modern)
 (defcustom djot-modern-lists t
-  "Style list markers and replace bullets and task boxes."
+  "Style list markers and task boxes."
   :type 'boolean :group 'djot-modern)
+(defcustom djot-modern-list '((?- . "–") (?+ . "◦") (?* . "•"))
+  "Replacement glyphs for unordered list markers."
+  :type '(alist :key-type character :value-type string) :group 'djot-modern)
+(defcustom djot-modern-checkbox '((checked . "☑") (unchecked . "□"))
+  "Replacement glyphs for task checkboxes."
+  :type '(alist :key-type symbol :value-type string) :group 'djot-modern)
 (defcustom djot-modern-blocks t
-  "Style code, raw blocks, quotes, div fences and thematic breaks."
+  "Style code, raw blocks, quotes, divs and thematic breaks."
+  :type 'boolean :group 'djot-modern)
+(defcustom djot-modern-block-fringe t
+  "Draw block borders in graphical frame fringes.
+Existing line or wrap prefixes take precedence over these decorations."
   :type 'boolean :group 'djot-modern)
 (defcustom djot-modern-tables t
-  "Style table headers, pipes, separators and captions."
+  "Display tables with aligned columns, padding and thin rules.
+This never changes table source.  Use the base mode's alignment command
+to align the source itself.  Terminal frames retain source table layout."
   :type 'boolean :group 'djot-modern)
+(defcustom djot-modern-table-padding 1.0
+  "Horizontal cell padding as a multiple of the fixed font width."
+  :type 'number :group 'djot-modern)
+(defcustom djot-modern-table-vertical 1
+  "Width of graphical vertical table rules in pixels."
+  :type 'natnum :group 'djot-modern)
+(defcustom djot-modern-table-horizontal 0.15
+  "Height of graphical table separator rows relative to normal text."
+  :type 'float :group 'djot-modern)
 (defcustom djot-modern-inline t
-  "Style inline emphasis, links, code, math and attributes."
+  "Style attribute labels and position subscript and superscript text.
+Semantic emphasis and links are styled by djot-mode, not this option."
   :type 'boolean :group 'djot-modern)
 (defcustom djot-modern-replace-markers t
-  "Replace structural markers with glyphs without changing source text.
-When nil, retain source markers and apply faces only.  Inline delimiters
-always remain visible.  Toggle the mode after changing any option."
+  "Use display replacements for structural markers.
+The explicit `djot-show-source' command also suppresses replacements.
+Moving point never reveals markers automatically."
   :type 'boolean :group 'djot-modern)
 
-(defface djot-modern-heading-1 '((t :inherit variable-pitch :weight bold :height 1.35))
-  "First-level heading." :group 'djot-modern)
-(defface djot-modern-heading-2 '((t :inherit variable-pitch :weight bold :height 1.2))
-  "Second-level heading." :group 'djot-modern)
-(defface djot-modern-heading-3 '((t :inherit variable-pitch :weight bold :height 1.1))
-  "Third-level heading." :group 'djot-modern)
-(defface djot-modern-heading-4 '((t :inherit variable-pitch :weight bold))
-  "Deeper heading." :group 'djot-modern)
-(defface djot-modern-marker '((t :inherit shadow))
-  "Visible structural punctuation." :group 'djot-modern)
-(defface djot-modern-label '((t :inherit (shadow fixed-pitch) :box (:line-width -1)))
-  "Code language labels and attributes." :group 'djot-modern)
+(defface djot-modern-heading-1 '((t :inherit djot-heading-1 :height 1.35 :weight bold))
+  "Level one heading; inherits the theme's first outline color." :group 'djot-modern)
+(defface djot-modern-heading-2 '((t :inherit djot-heading-2 :height 1.2 :weight bold))
+  "Level two heading." :group 'djot-modern)
+(defface djot-modern-heading-3 '((t :inherit djot-heading-3 :height 1.1 :weight bold))
+  "Level three heading." :group 'djot-modern)
+(defface djot-modern-heading-4 '((t :inherit djot-heading-4 :weight bold))
+  "Level four heading." :group 'djot-modern)
+(defface djot-modern-heading-5 '((t :inherit djot-heading-5 :weight bold))
+  "Level five heading." :group 'djot-modern)
+(defface djot-modern-heading-6 '((t :inherit djot-heading-6 :weight bold))
+  "Level six and deeper heading." :group 'djot-modern)
+(defface djot-modern-fixed-pitch '((t :inherit fixed-pitch))
+  "Technical text; deliberately has no token foreground override." :group 'djot-modern)
+(defface djot-modern-symbol '((t :inherit (fixed-pitch shadow)))
+  "Structural glyphs." :group 'djot-modern)
+(defface djot-modern-label '((t :inherit (shadow fixed-pitch) :height 0.85 :box (:line-width -1)))
+  "Compact language, div and attribute labels." :group 'djot-modern)
+(defface djot-modern-quote '((t :slant italic))
+  "Quoted prose; retains the body family and base quote color." :group 'djot-modern)
 (defface djot-modern-code '((t :inherit fixed-pitch :extend t))
-  "Code and raw text." :group 'djot-modern)
-(defface djot-modern-strong '((t :weight bold))
-  "Strong text." :group 'djot-modern)
-(defface djot-modern-emphasis '((t :slant italic))
-  "Emphasized text." :group 'djot-modern)
-(defface djot-modern-highlight '((t :inherit highlight))
-  "Highlighted text." :group 'djot-modern)
-(defface djot-modern-insert '((t :inherit success :underline t))
-  "Inserted text." :group 'djot-modern)
-(defface djot-modern-delete '((t :inherit shadow :strike-through t))
-  "Deleted text." :group 'djot-modern)
-(defface djot-modern-script '((t :height 0.85))
-  "Subscripts and superscripts, with visible source delimiters." :group 'djot-modern)
-(defface djot-modern-link '((t :inherit link))
-  "Link text, without adding navigation behavior." :group 'djot-modern)
-(defface djot-modern-checked '((t :inherit success))
-  "Completed task marker." :group 'djot-modern)
+  "Code blocks; customize the background without overriding token colors." :group 'djot-modern)
 (defface djot-modern-table '((t :inherit fixed-pitch))
-  "Table cells, preserving source alignment." :group 'djot-modern)
+  "Table cells." :group 'djot-modern)
+(defface djot-modern-table-rule '((t :inherit shadow))
+  "Thin table rules." :group 'djot-modern)
+(defface djot-modern-checked '((t :inherit (fixed-pitch success)))
+  "Completed task glyph." :group 'djot-modern)
 
-(defconst djot-modern--faces
-  '(djot-modern-heading-1 djot-modern-heading-2 djot-modern-heading-3
-    djot-modern-heading-4 djot-modern-marker djot-modern-label djot-modern-code
-    djot-modern-strong djot-modern-emphasis djot-modern-highlight
-    djot-modern-insert djot-modern-delete djot-modern-script djot-modern-link
-    djot-modern-checked djot-modern-table))
+(defvar-local djot-modern--remappings nil)
+(defvar-local djot-modern--spacing nil)
+(defvar-local djot-modern--metrics nil)
+(defvar-local djot-modern--block-background nil)
+(defvar djot-modern-mode)
+(defvar djot-modern--beg)
+(defvar djot-modern--end)
 
-(defconst djot-modern--keywords '((djot-modern--match (0 nil))))
-(defvar-local djot-modern--parser nil)
-(defvar-local djot-modern--owns-parser nil)
-(defvar-local djot-modern--query nil)
-(defvar-local djot-modern--font-lock-was-enabled nil)
-(defvar-local djot-modern--active nil)
+(defun djot-modern--clear (beg end &optional all)
+  "Clear our overlays in BEG END, preserving outside portions.
+With ALL, remove intersecting decorations without splitting them."
+  (dolist (overlay (overlays-in beg end))
+    (when (and (overlay-get overlay 'djot-modern)
+               (or all (not (overlay-get overlay 'display))
+                   (and (>= (overlay-start overlay) beg)
+                        (<= (overlay-end overlay) end))))
+      (unless all
+        (when (< (overlay-start overlay) beg)
+          (move-overlay (copy-overlay overlay) (overlay-start overlay) beg))
+        (when (> (overlay-end overlay) end)
+          (move-overlay (copy-overlay overlay) end (overlay-end overlay))))
+      (delete-overlay overlay))))
 
-(defun djot-modern--patterns ()
-  "Return query patterns for the enabled features."
-  (append
-   (when djot-modern-headings
-     '((heading) @heading
-       (heading (marker) @heading-marker)
-       (heading (content (marker) @heading-marker))))
-   (when djot-modern-lists
-     '([(list_marker_dash) (list_marker_plus) (list_marker_star)] @bullet
-       (list_marker_task (unchecked) @unchecked)
-       (list_marker_task (checked) @checked)
-       [(list_marker_definition)
-        (list_marker_decimal_period) (list_marker_decimal_paren)
-        (list_marker_decimal_parens) (list_marker_lower_alpha_period)
-        (list_marker_lower_alpha_paren) (list_marker_lower_alpha_parens)
-        (list_marker_upper_alpha_period) (list_marker_upper_alpha_paren)
-        (list_marker_upper_alpha_parens) (list_marker_lower_roman_period)
-        (list_marker_lower_roman_paren) (list_marker_lower_roman_parens)
-        (list_marker_upper_roman_period) (list_marker_upper_roman_paren)
-        (list_marker_upper_roman_parens)] @marker))
-   (when djot-modern-blocks
-     '([(code_block) (raw_block) (frontmatter)] @code
-       [(code_block_marker_begin) (code_block_marker_end)
-        (raw_block_marker_begin) (raw_block_marker_end)
-        (frontmatter_marker) (div_marker_begin) (div_marker_end)] @marker
-       (language) @label
-       (block_quote_marker) @quote
-       (thematic_break) @rule))
-   (when djot-modern-tables
-     '([(table_header) (table_row)] @table
-       (table_header) @strong
-       (table_header "|" @pipe)
-       (table_row "|" @pipe)
-       (table_separator) @marker
-       (table_caption) @emphasis))
-   (when djot-modern-inline
-     '((emphasis) @emphasis (strong) @strong
-       (insert) @insert (delete) @delete (highlighted) @highlight
-       [(subscript) (superscript)] @script
-       [(verbatim) (raw_inline) (math)] @code
-       [(link_text) (autolink)] @link
-       [(inline_link_destination) (link_destination) (link_label)
-        (reference_label)] @marker
-       [(inline_attribute) (block_attribute)] @label
-       [(emphasis_begin) (emphasis_end) (strong_begin) (strong_end)
-        (superscript_begin) (superscript_end) (subscript_begin) (subscript_end)
-        (highlighted_begin) (highlighted_end) (insert_begin) (insert_end)
-        (delete_begin) (delete_end) (verbatim_marker_begin) (verbatim_marker_end)
-        (math_marker) (math_marker_begin) (math_marker_end)] @marker))))
+(defun djot-modern--foreign-property-p (beg end property)
+  "Check for another package's PROPERTY between BEG and END."
+  (or (text-property-not-all beg end property nil)
+      (cl-some (lambda (ov)
+                 (and (not (overlay-get ov 'djot-modern))
+                      (overlay-get ov property)))
+               (overlays-in beg end))))
 
-(defun djot-modern--clear (beg end &rest _ignored)
-  "Remove only our decorations between BEG and END."
-  (with-silent-modifications
-    (let ((pos beg) next)
-      (while (< pos end)
-        (setq next (next-single-property-change pos 'djot-modern--display nil end))
-        (when-let* ((ours (get-text-property pos 'djot-modern--display)))
-          (let ((at pos) stop)
-            (while (< at next)
-              (setq stop (next-single-property-change at 'display nil next))
-              (when (eq ours (get-text-property at 'display))
-                (remove-text-properties at stop '(display nil)))
-              (setq at stop)))
-          (remove-text-properties pos next '(djot-modern--display nil)))
-        (setq pos next)))
-    (let ((pos beg) next face)
-      (while (< pos end)
-        (setq next (next-single-property-change pos 'face nil end)
-              face (get-text-property pos 'face))
-        (cond
-         ((memq face djot-modern--faces)
-          (remove-text-properties pos next '(face nil)))
-         ((and (consp face) (not (keywordp (car face))))
-          (let ((clean (cl-set-difference face djot-modern--faces)))
-            (unless (equal face clean)
-              (if clean (put-text-property pos next 'face clean)
-                (remove-text-properties pos next '(face nil)))))))
-        (setq pos next)))))
+(defun djot-modern--overlay (beg end &rest properties)
+  "Decorate BEG END with PROPERTIES, clipped to the fontification range.
+Display replacements are atomic and never override foreign displays."
+  (let ((display (plist-get properties 'display)))
+    (when (and (< beg end)
+               (or (not display)
+                   (and (<= djot-modern--beg beg) (<= end djot-modern--end)
+                        (not (djot-modern--foreign-property-p beg end 'display)))))
+      (setq beg (max beg djot-modern--beg) end (min end djot-modern--end))
+      (when (< beg end)
+        (let ((overlay (make-overlay beg end nil t nil)))
+          (overlay-put overlay 'djot-modern t)
+          (overlay-put overlay 'evaporate t)
+          ;; Native code and semantic text properties supply foregrounds.
+          ;; Secondary priority lets explicit foreign overlays win.
+          (overlay-put overlay 'priority '(nil . 5))
+          (while properties
+            (overlay-put overlay (pop properties) (pop properties)))
+          overlay)))))
 
-(defun djot-modern--filter-substring (text)
-  "Return TEXT without this mode's buffer-specific decorations."
-  (with-temp-buffer
-    (insert text)
-    (djot-modern--clear (point-min) (point-max))
-    (buffer-string)))
+(defun djot-modern--face (node face)
+  "Apply FACE to NODE within the current fontification range."
+  (when node
+    (djot-modern--overlay (treesit-node-start node) (treesit-node-end node)
+                          'face face)))
 
-(defun djot-modern--paint (beg end face &optional glyph)
-  "Apply FACE and optional GLYPH between BEG and END.
-Never replace an existing display property owned by another package."
-  (when (< beg end)
-    (font-lock-prepend-text-property beg end 'face face)
-    (when (and glyph djot-modern-replace-markers)
-      ;; Some grammar markers include indentation or a terminating newline.
-      ;; Replacing those would collapse nesting or join separate display lines.
+(defun djot-modern--replace (node display &optional face)
+  "Replace NODE's non-whitespace marker with DISPLAY and optional FACE."
+  (when (and node display djot-modern-replace-markers (not djot-source-visible))
+    (save-excursion
+      (goto-char (treesit-node-start node))
+      (skip-chars-forward " \t" (treesit-node-end node))
+      (let ((beg (point)))
+        (goto-char (treesit-node-end node))
+        (skip-chars-backward " \t\n\r" beg)
+        (djot-modern--overlay beg (point) 'display display
+                              'face (or face 'djot-modern-symbol))))))
+
+(defun djot-modern--fringe (node)
+  "Draw an org-modern-style fringe border alongside NODE."
+  (when (and djot-modern-block-fringe (display-graphic-p))
+    (unless (fringe-bitmap-p 'djot-modern--inner)
+      (define-fringe-bitmap 'djot-modern--inner [128] nil 8 '(top t))
+      (define-fringe-bitmap 'djot-modern--begin
+        (vconcat [0 0 0 0 0 255] (make-vector 122 128)) nil 8 'top)
+      (define-fringe-bitmap 'djot-modern--end
+        (vconcat (make-vector 122 128) [255 0 0 0 0 0]) nil 8 'bottom))
+    (save-excursion
+      (goto-char (treesit-node-start node))
+      (let ((first (line-beginning-position))
+            (last (save-excursion
+                    (goto-char (1- (treesit-node-end node)))
+                    (line-beginning-position))))
+        (goto-char (max first (save-excursion
+                               (goto-char djot-modern--beg)
+                               (line-beginning-position))))
+        (while (<= (point) last)
+          (let* ((beg (point)) (end (min (point-max) (1+ (line-end-position))))
+                 (bitmap (cond ((= beg first) 'djot-modern--begin)
+                               ((= beg last) 'djot-modern--end)
+                               (t 'djot-modern--inner)))
+                 (prefix (propertize " " 'display
+                                     `(left-fringe ,bitmap djot-modern-symbol))))
+            (unless (or (djot-modern--foreign-property-p beg end 'line-prefix)
+                        (djot-modern--foreign-property-p beg end 'wrap-prefix))
+              (djot-modern--overlay beg end 'line-prefix prefix 'wrap-prefix prefix)))
+          (if (= (forward-line 1) 0) nil (goto-char (1+ last))))))))
+
+(defun djot-modern--heading (node)
+  "Style the heading NODE and its continuation markers."
+  (let* ((marker (treesit-node-child-by-field-name node "marker"))
+         (level (length (string-trim (treesit-node-text marker t))))
+         (face (intern (format "djot-modern-heading-%d" (min 6 level))))
+         (content (treesit-node-child-by-field-name node "content")))
+    (djot-modern--face content face)
+    (when djot-modern-heading-stars
+      (let ((glyph (nth (min (1- level) (1- (length djot-modern-heading-stars)))
+                        djot-modern-heading-stars)))
+        (djot-modern--replace marker glyph face)
+        (dolist (child (djot-node-children content))
+          (when (equal (treesit-node-type child) "marker")
+            (djot-modern--replace child glyph face)))))))
+
+(defun djot-modern--label (node)
+  "Style NODE as a compact label, retaining all attribute values."
+  (djot-modern--face node 'djot-modern-label)
+  ;; Only the braces of a parsed attribute become padding.  Its values,
+  ;; comments, escaped characters and multiline structure remain intact.
+  (when (and djot-modern-replace-markers (not djot-source-visible)
+             (member (treesit-node-type node) '("inline_attribute" "block_attribute")))
+    (let ((beg (treesit-node-start node))
+          (end (save-excursion
+                 (goto-char (treesit-node-end node))
+                 (skip-chars-backward " \t\r\n" (treesit-node-start node))
+                 (point))))
+      (when (and (eq (char-after beg) ?{) (eq (char-before end) ?}))
+        (djot-modern--overlay beg (1+ beg) 'display " ")
+        (djot-modern--overlay (1- end) end 'display " ")))))
+
+(defun djot-modern--cell-text (beg end)
+  "Return the displayed text of a table cell between BEG and END.
+Copy base invisibility into the measurement string; do not copy any
+modern layout overlays or alter the buffer."
+  (let ((text (buffer-substring beg end)))
+    (dolist (ov (overlays-in beg end))
+      (when (and (not (overlay-get ov 'djot-modern))
+                 (invisible-p (overlay-get ov 'invisible)))
+        (put-text-property (max 0 (- (overlay-start ov) beg))
+                           (min (- end beg) (- (overlay-end ov) beg))
+                           'invisible t text)))
+    ;; string-pixel-width uses a temporary buffer, so make the technical
+    ;; family explicit rather than depending on its default face remap.
+    (add-face-text-property 0 (length text) 'djot-modern-table t text)
+    text))
+
+(defun djot-modern--text-width (text)
+  "Return the pixel width of displayed TEXT in a graphical frame."
+  (string-pixel-width text))
+
+(defun djot-modern--table-pipes (row)
+  "Return direct pipe delimiter nodes in ROW, excluding literal cell pipes."
+  (cl-loop for i below (treesit-node-child-count row)
+           for child = (treesit-node-child row i)
+           when (equal (treesit-node-type child) "|") collect child))
+
+(defun djot-modern--table-cells (row)
+  "Return cell bounds between semantic pipe tokens in ROW.
+An empty cell has equal bounds and need not have a named syntax node."
+  (cl-loop for tail on (djot-modern--table-pipes row) while (cdr tail)
+           collect (cons (treesit-node-end (car tail))
+                         (treesit-node-start (cadr tail)))))
+
+(defun djot-modern--table (node)
+  "Present the parsed table NODE with padded, pixel-aligned thin rules.
+Only grammar-provided pipe tokens are decorated: literal or escaped
+pipes in cell contents are never mistaken for table boundaries."
+  (djot-modern--face node 'djot-modern-table)
+  (when (and (display-graphic-p) djot-modern-replace-markers
+             (not djot-source-visible))
+    (let* ((rows (cl-remove-if-not
+                  (lambda (n) (member (treesit-node-type n)
+                                      '("table_row" "table_header" "table_separator")))
+                  (djot-node-children node)))
+           (widths (make-vector (apply #'max 0 (mapcar (lambda (n)
+                                                       (length (djot-modern--table-cells n))) rows)) 0))
+           (unit (djot-modern--text-width (propertize " " 'face 'djot-modern-table)))
+           (pad (* djot-modern-table-padding unit))
+           (rule djot-modern-table-vertical)
+           (rule-face '(:inherit djot-modern-table-rule :inverse-video t))
+           alignments)
+      (dolist (row rows)
+        (unless (equal (treesit-node-type row) "table_separator")
+          (cl-loop for cell in (djot-modern--table-cells row) for col from 0 do
+                   (let* ((text (string-trim (djot-modern--cell-text (car cell) (cdr cell))))
+                          (width (djot-modern--text-width text)))
+                     (aset widths col (max (aref widths col) width))))))
+      (cl-loop for tail on rows for row = (car tail) do
+        (when-let* ((separator (if (equal (treesit-node-type row) "table_separator") row
+                                (when (and (cadr tail)
+                                           (equal (treesit-node-type (cadr tail)) "table_separator"))
+                                  (cadr tail)))))
+          (setq alignments
+                (mapcar (lambda (cell)
+                          (let ((text (treesit-node-text cell t)))
+                            (cond ((and (string-prefix-p ":" text) (string-suffix-p ":" text)) 'center)
+                                  ((string-suffix-p ":" text) 'right)
+                                  (t 'left))))
+                        (djot-node-children separator))))
+        (let* ((separator (equal (treesit-node-type row) "table_separator"))
+               (cells (djot-modern--table-cells row))
+               (pipes (djot-modern--table-pipes row))
+               (x (save-excursion
+                    (goto-char (treesit-node-start row))
+                    (djot-modern--text-width
+                     (propertize (buffer-substring-no-properties (line-beginning-position) (point))
+                                 'face 'djot-modern-table)))))
+          (when separator
+            (djot-modern--overlay (treesit-node-start row) (treesit-node-end row)
+                                  'face `(:height ,djot-modern-table-horizontal)))
+          (cl-loop for pipe in pipes for col from 0 do
+                   (djot-modern--overlay
+                    (treesit-node-start pipe) (treesit-node-end pipe)
+                    'before-string (propertize " " 'display `(space :align-to (,x))
+                                                'face (when separator `(:height ,djot-modern-table-horizontal)))
+                    'display `(space :width (,rule))
+                    'face (if separator (append `(:height ,djot-modern-table-horizontal) rule-face) rule-face))
+                   (when (< col (length widths))
+                     (let* ((cell (nth col cells))
+                            (beg (if cell (car cell) (treesit-node-end pipe)))
+                            (end (if cell (cdr cell) beg))
+                            (next-x (+ x rule pad (aref widths col) pad)))
+                       (when separator
+                         (djot-modern--overlay
+                          beg end 'display `(space :align-to (,next-x))
+                          'face `(:height ,djot-modern-table-horizontal
+                                  :inherit djot-modern-table-rule :overline t)))
+                       (unless separator
+                         ;; Source cell whitespace is the padding carrier.
+                         ;; With no whitespace, a before-string adds padding
+                         ;; without replacing or reparenting any cell text.
+                         (save-excursion
+                           (goto-char beg)
+                           (skip-chars-forward " \t" end)
+                           (let ((trim-beg (point)))
+                             (goto-char end)
+                             (skip-chars-backward " \t" trim-beg)
+                             (let* ((trim-end (point))
+                                    (width (djot-modern--text-width (djot-modern--cell-text trim-beg trim-end)))
+                                    (extra (max 0 (- (aref widths col) width)))
+                                    (left-pad (+ pad (pcase (nth col alignments)
+                                                       ('right extra) ('center (/ extra 2)) (_ 0))))
+                                    (padding (propertize " " 'display `(space :width (,left-pad)))))
+                               (if (< beg trim-beg)
+                                   (djot-modern--overlay beg trim-beg 'display `(space :width (,left-pad)))
+                                 (when (< beg end)
+                                   (djot-modern--overlay beg (1+ beg) 'before-string padding)))
+                               (when (< trim-end end)
+                                 (djot-modern--overlay trim-end end 'display ""))))))
+                       (setq x next-x)))))))))
+
+(defun djot-modern--quoted-p (node)
+  "Return non-nil when NODE is inside a block quote."
+  (let ((parent (treesit-node-parent node)))
+    (while (and parent (not (equal (treesit-node-type parent) "block_quote")))
+      (setq parent (treesit-node-parent parent)))
+    parent))
+
+(defun djot-modern--decorate (node)
+  "Apply presentation to valid semantic NODE."
+  (when (djot-node-valid-p node)
+    (let ((type (treesit-node-type node)))
+      (cond
+       ((equal type "heading")
+        (when djot-modern-headings (djot-modern--heading node)))
+       ((member type '("code_block" "raw_block" "frontmatter"))
+        (djot-modern--face node 'djot-modern-code)
+        (when djot-modern-blocks
+          (when djot-modern--block-background
+            (let ((overlay (djot-modern--overlay
+                            (treesit-node-start node) (treesit-node-end node)
+                            'face `(:background ,djot-modern--block-background :extend t))))
+              (when overlay (overlay-put overlay 'priority '(nil . -5)))))
+          (djot-modern--fringe node)))
+       ((member type '("verbatim" "raw_inline" "math"))
+        (djot-modern--face node 'djot-modern-fixed-pitch))
+       ((equal type "block_quote")
+        (when djot-modern-blocks (djot-modern--fringe node)))
+       ((equal type "paragraph")
+        (when (and djot-modern-blocks (djot-modern--quoted-p node))
+          (djot-modern--face node 'djot-modern-quote)))
+       ((equal type "div")
+        (when djot-modern-blocks (djot-modern--fringe node)))
+       ((equal type "block_quote_marker")
+        (when djot-modern-blocks (djot-modern--replace node "│")))
+       ((member type '("code_block_marker_begin" "raw_block_marker_begin" "div_marker_begin"))
+        (when (and djot-modern-blocks (djot-node-valid-p (treesit-node-parent node)))
+          (djot-modern--replace node "▸")))
+       ((member type '("code_block_marker_end" "raw_block_marker_end" "div_marker_end"))
+        (when (and djot-modern-blocks (djot-node-valid-p (treesit-node-parent node)))
+          (djot-modern--replace node "▰")))
+       ((member type '("language" "class_name"))
+        (when djot-modern-blocks (djot-modern--label node)))
+       ((member type '("inline_attribute" "block_attribute"))
+        (when djot-modern-inline (djot-modern--label node)))
+       ((equal type "table") (when djot-modern-tables (djot-modern--table node)))
+       ((equal type "table_header")
+        (when djot-modern-tables (djot-modern--face node 'bold)))
+       ((equal type "table_caption")
+        (when djot-modern-tables
+          (djot-modern--face node (delq nil (list 'italic djot-modern-prose-face)))))
+       ((member type '("superscript" "subscript"))
+        (when (and djot-modern-inline (not djot-source-visible))
+          (let ((content (treesit-node-child-by-field-name node "content")))
+            (when content
+              (djot-modern--overlay (treesit-node-start content) (treesit-node-end content)
+                                    'display `((height 0.8) (raise ,(if (equal type "superscript") 0.3 -0.2))))))))
+       ((member type '("list_marker_dash" "list_marker_plus" "list_marker_star"))
+        (when djot-modern-lists
+          (djot-modern--replace node (alist-get (string-to-char (string-trim (treesit-node-text node t)))
+                                                 djot-modern-list))))
+       ((equal type "list_marker_task")
+        (when djot-modern-lists
+          (let* ((check (treesit-node-child-by-field-name node "checkmark"))
+                 (state (intern (treesit-node-type check))))
+            (djot-modern--replace node (alist-get state djot-modern-checkbox)
+                                  (if (eq state 'checked) 'djot-modern-checked 'djot-modern-symbol)))))
+       ((equal type "thematic_break")
+        (when djot-modern-blocks
+          (djot-modern--replace node '(space :width 30) '(:inherit shadow :strike-through t))))))))
+
+(defun djot-modern--fontify (beg end)
+  "Refresh this mode's presentation after base fontification in BEG END."
+  (when djot-modern-mode
+    (let ((djot-modern--beg beg) (djot-modern--end end))
       (save-excursion
-        (goto-char beg)
-        (skip-chars-forward " \t" end)
-        (setq beg (point))
-        (goto-char end)
-        (skip-chars-backward "\n\r" beg)
-        (setq end (point)))
-      (when (and (< beg end) (not (text-property-not-all beg end 'display nil)))
-        (let ((display (propertize glyph 'face face)))
-          (add-text-properties beg end
-                               (list 'display display 'djot-modern--display display)))))))
+        (save-match-data
+          (djot-modern--clear beg end)
+          (djot-map-nodes #'djot-modern--decorate beg end))))))
 
-(defun djot-modern--decorate (capture beg end)
-  "Decorate CAPTURE, clipped to BEG and END."
-  (let* ((tag (car capture)) (node (cdr capture))
-         (start (max beg (treesit-node-start node)))
-         (stop (min end (treesit-node-end node))))
-    (when (< start stop)
-      (pcase tag
-        ((or 'heading 'heading-marker)
-         (let ((heading node))
-           (while (not (equal (treesit-node-type heading) "heading"))
-             (setq heading (treesit-node-parent heading)))
-           (let* ((marker (treesit-node-child heading 0 t))
-                  (level (max 1 (min 4 (length (string-trim (treesit-node-text marker)))))))
-             (if (eq tag 'heading)
-                 (djot-modern--paint start stop (nth (1- level) djot-modern--faces))
-               (djot-modern--paint start stop 'djot-modern-marker
-                                   (aref ["◉ " "○ " "✳ " "· "] (1- level)))))))
-        ('bullet (djot-modern--paint start stop 'djot-modern-marker "• "))
-        ('unchecked (djot-modern--paint start stop 'djot-modern-marker "☐"))
-        ('checked (djot-modern--paint start stop 'djot-modern-checked "☑"))
-        ('quote (djot-modern--paint start stop 'djot-modern-marker "│ "))
-        ('pipe (djot-modern--paint start stop 'djot-modern-marker "│"))
-        ('rule (djot-modern--paint start stop 'djot-modern-marker "────────"))
-        (_ (djot-modern--paint start stop
-                              (intern (concat "djot-modern-" (symbol-name tag)))))))))
+(defun djot-modern--after-change (beg end _old-length)
+  "Invalidate enclosing table layout after a source edit in BEG END."
+  (when djot-modern-tables
+    (when-let* ((table (or (djot-node-at beg "table") (djot-node-at end "table"))))
+      (font-lock-flush (treesit-node-start table) (treesit-node-end table)))))
 
-(defun djot-modern--match (limit)
-  "Decorate parsed nodes between point and font-lock LIMIT.
-Return nil: this matcher applies properties directly, without match data."
-  (let ((beg (point)))
-    (when (and djot-modern--active (< beg limit))
-      (save-restriction
-        (widen)
-        (with-silent-modifications
-          (djot-modern--clear beg limit)
-          (when djot-modern--query
-            (dolist (capture (treesit-query-capture
-                             djot-modern--parser djot-modern--query beg limit))
-              (djot-modern--decorate capture beg limit)))))))
-  (goto-char limit)
-  nil)
+(defun djot-modern--pre-redisplay (_windows)
+  "Refresh frame-dependent layout when the theme or font changed."
+  (let ((metrics (list (display-graphic-p) (face-font 'fixed-pitch)
+                       (face-font 'djot-modern-table)
+                       (face-font 'default) (frame-char-height)
+                       (face-attribute 'djot-modern-table-rule :foreground nil t)
+                       (face-background 'default nil t) (face-foreground 'default nil t))))
+    (unless (equal metrics djot-modern--metrics)
+      (setq djot-modern--metrics metrics
+            djot-modern--block-background
+            (when (display-graphic-p)
+              (let ((bg (color-name-to-rgb (face-background 'default nil t)))
+                    (fg (color-name-to-rgb (face-foreground 'default nil t))))
+                (when (and bg fg)
+                  (apply #'color-rgb-to-hex
+                         (cl-mapcar (lambda (b f) (+ (* 0.96 b) (* 0.04 f))) bg fg))))))
+      (font-lock-flush))))
 
-(defun djot-modern--changed (ranges parser)
-  "Invalidate structural RANGES reported by PARSER.
-Ordinary text edits are also handled by font-lock's normal change hooks."
-  (when (and djot-modern--active (eq parser djot-modern--parser))
+(defun djot-modern--font-lock-change ()
+  "Follow explicit font-lock activation or deactivation in this buffer."
+  (when djot-modern-mode
     (save-restriction
       (widen)
-      (dolist (range ranges)
-        (djot-modern--clear (car range) (cdr range))
-        (font-lock-flush (car range) (cdr range))))))
-
-(defun djot-modern--after-major-mode ()
-  "Preserve base fontification when activated from a major mode hook."
-  (remove-hook 'after-change-major-mode-hook #'djot-modern--after-major-mode t)
-  ;; Global font-lock runs after major mode hooks.  Our early activation must
-  ;; not take ownership of font-lock that the major mode would enable anyway.
-  (when (and global-font-lock-mode font-lock-defaults
-             (cond ((eq font-lock-global-modes t) t)
-                   ((eq (car-safe font-lock-global-modes) 'not)
-                    (not (memq major-mode (cdr font-lock-global-modes))))
-                   (t (memq major-mode font-lock-global-modes))))
-    (setq djot-modern--font-lock-was-enabled t)))
+      (if font-lock-mode (djot-refresh)
+        (djot-modern--clear (point-min) (point-max) t)))))
 
 (defun djot-modern--disable ()
-  "Release this buffer's decorations and parser resources."
-  (when djot-modern--active
-    (setq djot-modern--active nil)
-    (remove-hook 'change-major-mode-hook #'djot-modern--before-major-mode t)
-    (remove-hook 'after-change-major-mode-hook #'djot-modern--after-major-mode t)
-    (remove-hook 'before-change-functions #'djot-modern--clear t)
-    (remove-function (local 'filter-buffer-substring-function)
-                     #'djot-modern--filter-substring)
-    (treesit-parser-remove-notifier djot-modern--parser #'djot-modern--changed)
-    (font-lock-remove-keywords nil djot-modern--keywords)
-    (remove-function (local 'font-lock-unfontify-region-function) #'djot-modern--clear)
-    (save-restriction
-      (widen)
-      (djot-modern--clear (point-min) (point-max))
-      (font-lock-flush))
-    (when djot-modern--owns-parser (treesit-parser-delete djot-modern--parser))
-    (setq djot-modern--parser nil djot-modern--query nil djot-modern--owns-parser nil)
-    (unless djot-modern--font-lock-was-enabled (font-lock-mode -1))))
-
-(defun djot-modern--before-major-mode ()
-  "Disable before changing major mode, while local state still exists."
-  (djot-modern-mode -1))
+  "Remove all local presentation without touching base-mode decorations."
+  (remove-hook 'djot-after-fontify-hook #'djot-modern--fontify t)
+  (remove-hook 'after-change-functions #'djot-modern--after-change t)
+  (remove-hook 'pre-redisplay-functions #'djot-modern--pre-redisplay t)
+  (remove-hook 'change-major-mode-hook #'djot-modern--disable t)
+  (remove-hook 'font-lock-mode-hook #'djot-modern--font-lock-change t)
+  (save-restriction
+    (widen)
+    (djot-modern--clear (point-min) (point-max) t))
+  (mapc #'face-remap-remove-relative djot-modern--remappings)
+  (setq djot-modern--remappings nil djot-modern--metrics nil)
+  (when djot-modern--spacing
+    (when (equal line-spacing (nth 2 djot-modern--spacing))
+      (if (car djot-modern--spacing)
+          (setq-local line-spacing (cadr djot-modern--spacing))
+        (kill-local-variable 'line-spacing)))
+    (setq djot-modern--spacing nil)))
 
 ;;;###autoload
 (define-minor-mode djot-modern-mode
-  "Display Djot with restrained typography and editable source.
-Requires Emacs tree-sitter support and an installed tree-sitter-djot grammar.
-Works with `text-mode' or a Djot major mode.  No text is changed.  Toggle
-again to apply customization changes or to see the original source display."
+  "Optional modern typography for `djot-mode'.
+No buffer text, semantic font-lock rules, concealment or editing commands
+are changed.  Use `djot-show-source' to explicitly inspect raw syntax."
   :lighter " DjM" :group 'djot-modern
-  (if (not djot-modern-mode)
-      (djot-modern--disable)
-    (unless djot-modern--active
-      (condition-case err
-          (progn
-            (unless (treesit-ready-p 'djot t)
-              (user-error "Djot grammar unavailable; see djot-modern README.org"))
-            ;; Compile before touching buffer state: incompatible grammars fail cleanly.
-            (let* ((patterns (djot-modern--patterns))
-                   (query (and patterns (treesit-query-compile 'djot patterns t)))
-                   (existing (cl-find 'djot (treesit-parser-list)
-                                      :key #'treesit-parser-language)))
-              (setq djot-modern--query query
-                    djot-modern--font-lock-was-enabled font-lock-mode
-                    djot-modern--parser (or existing (treesit-parser-create 'djot))
-                    djot-modern--owns-parser (not existing)
-                    djot-modern--active t))
-            (font-lock-add-keywords nil djot-modern--keywords 'append)
-            (add-function :before (local 'font-lock-unfontify-region-function)
-                          #'djot-modern--clear)
-            ;; Deleted text must enter undo history without our decorations.
-            (add-hook 'before-change-functions #'djot-modern--clear nil t)
-            (add-function :filter-return (local 'filter-buffer-substring-function)
-                          #'djot-modern--filter-substring)
-            (treesit-parser-add-notifier djot-modern--parser #'djot-modern--changed)
-            (add-hook 'change-major-mode-hook #'djot-modern--before-major-mode nil t)
-            (add-hook 'after-change-major-mode-hook #'djot-modern--after-major-mode nil t)
-            (font-lock-mode 1)
-            (save-restriction (widen) (font-lock-flush)))
-        (error
-         (djot-modern--disable)
-         (setq djot-modern-mode nil)
-         (signal (car err) (cdr err)))))))
+  (djot-modern--disable)
+  (when djot-modern-mode
+    (unless (derived-mode-p 'djot-mode)
+      (setq djot-modern-mode nil)
+      (user-error "Enable djot-mode before djot-modern-mode"))
+    (when djot-modern-prose-face
+      (push (face-remap-add-relative 'default djot-modern-prose-face)
+            djot-modern--remappings))
+    (when djot-modern-line-spacing
+      (setq djot-modern--spacing (list (local-variable-p 'line-spacing)
+                                       line-spacing djot-modern-line-spacing))
+      (setq-local line-spacing djot-modern-line-spacing))
+    (add-hook 'djot-after-fontify-hook #'djot-modern--fontify nil t)
+    (add-hook 'after-change-functions #'djot-modern--after-change nil t)
+    (add-hook 'pre-redisplay-functions #'djot-modern--pre-redisplay nil t)
+    (add-hook 'change-major-mode-hook #'djot-modern--disable nil t)
+    (add-hook 'font-lock-mode-hook #'djot-modern--font-lock-change nil t)
+    (djot-modern--pre-redisplay nil)
+    (save-restriction
+      (widen)
+      (djot-refresh))))
+
+(defun djot-modern--on ()
+  "Enable modern presentation in a Djot buffer."
+  (when (derived-mode-p 'djot-mode) (djot-modern-mode 1)))
+
+;;;###autoload
+(define-globalized-minor-mode global-djot-modern-mode
+  djot-modern-mode djot-modern--on :group 'djot-modern)
 
 (provide 'djot-modern)
 ;;; djot-modern.el ends here

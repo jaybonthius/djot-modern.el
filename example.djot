@@ -25,7 +25,13 @@ Visit [the Djot reference](https://djot.net) or <https://djot.net>. A [quiet spa
 
 : term
 
-  A definition stays close to its name.
+  A definition stays close to its name. An attribute on _emphasized text_{#foo.bar .baz key="my value"}
+
+
+
+{#water}
+{.important .large}
+Don't forget to turn off the water!
 
 ## A borrowed thought
 
@@ -48,7 +54,9 @@ The heading hierarchy is deliberately small.
 ## Code, not decoration
 
 ```elisp
-(message "Hello, Djot")
+(defun greet (name)
+  "Return a friendly greeting."
+  (format "Hello, %s!" name))
 ;; # Not a heading
 ;; *Not strong* and | not a table |
 ```
@@ -63,18 +71,18 @@ A fence may contain ``` shorter backticks.
 ```
 
 ::: note
-This div has visible, muted fences.
+This div has a compact label and a quiet frame.
 :::
 
 ## A modest table
 
 | Element | Purpose |
-| ------- | ------- |
+|---------|---------|
 | Heading | A place to begin |
 | `x|y` | A literal pipe |
 | a\|b | An escaped pipe |
 
-^ Source spacing, not a layout engine.
+^ Aligned source and thin, padded presentation.
 
 ***
 
