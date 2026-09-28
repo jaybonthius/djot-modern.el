@@ -1,0 +1,63 @@
+#+title: djot-modern
+
+Quiet typography for Djot in Emacs, inspired by Minad's [[https://github.com/minad/org-modern][org-modern]]. A small presentation minor mode: theme-inheriting faces, compact structural markers, and editable source. No images, overlays, exporter, or hidden inline delimiters.
+
+* Setup
+
+Requires Emacs 29.1 or newer built with tree-sitter, and the [[https://github.com/treeman/tree-sitter-djot][tree-sitter-djot]] grammar. Put this checkout on your load path. If the grammar is already installed outside Emacs's normal search path, add its directory to =treesit-extra-load-path=; the optional line below is a placeholder to replace, not a required location.
+
+#+begin_src emacs-lisp
+(add-to-list 'load-path "/path/to/emacs-djot-modern")
+;; Optional, for an existing grammar in a nonstandard directory:
+;; (add-to-list 'treesit-extra-load-path "/path/to/tree-sitter")
+(require 'djot-modern)
+
+;; Only if you do not already have a Djot major mode:
+(add-to-list 'auto-mode-alist '("\\.\\(?:dj\\|djot\\)\\'" . text-mode))
+(defun my-djot-modern-setup ()
+  (when (and buffer-file-name
+             (string-match-p "\\.\\(?:dj\\|djot\\)\\'" buffer-file-name))
+    (djot-modern-mode 1)))
+(add-hook 'text-mode-hook #'my-djot-modern-setup)
+#+end_src
+
+If you need to build the grammar, add =(djot "https://github.com/treeman/tree-sitter-djot")= to =treesit-language-source-alist= and run =M-x treesit-install-language-grammar RET djot RET=. That Emacs command downloads and compiles the grammar and needs Git and a C compiler; this package never installs anything automatically. Check readiness with =(treesit-ready-p 'djot)=.
+
+With an existing =djot-ts-mode=, use =(add-hook 'djot-ts-mode-hook #'djot-modern-mode)= instead of the filename/text-mode setup. The official Djot repository includes =editors/emacs/djot.el=; load it explicitly after =djot-modern= if using that file, since it expects tree-sitter to be loaded and its filename differs from the feature it provides. =djot-modern= does not supply a major mode.
+
+Open [[file:example.djot][example.djot]] and run =M-x djot-modern-mode=. Toggle it again for the original display. Source, undo history, and the buffer's modified state are untouched; copying still copies Djot. Use =M-x customize-group RET djot-modern= for faces and options.
+
+* Appearance
+
+- =djot-modern-headings=: four heading sizes, with deeper levels sharing the fourth; compact markers on continuation lines too.
+- =djot-modern-lists=: bullets, task boxes, and muted ordered/definition markers.
+- =djot-modern-blocks=: fixed-pitch code/raw blocks, language labels, quote bars, div fences, and rules.
+- =djot-modern-tables=: fixed-pitch rows, bold headers, restrained pipes, separators, and captions.
+- =djot-modern-inline=: emphasis, strong, highlights, insertions/deletions, small sub/superscripts, code/math, links, and attribute labels.
+- =djot-modern-replace-markers=: set to =nil= for faces only, keeping every source marker.
+
+Each feature can be disabled independently. Toggle the mode after changing options. Inline delimiters and destinations stay visible; sub/superscripts become smaller but are not raised/lowered. Links receive a face, not navigation commands. Existing display properties take precedence over marker replacements.
+
+* Boundaries
+
+Syntax recognition follows the installed grammar, not a second Elisp parser. The tested grammar (=tree-sitter-djot-0-unstable-2025-09-15=, ABI 14) accepts a list immediately after a paragraph although Djot requires a blank line. Other grammar versions may differ; incompatible query node names cause an error before the mode changes buffer state. This is not a full Djot renderer.
+
+Font-lock queries are bounded to the requested region; opening or closing a fence can affect the rest of a document. Existing Djot parsers are reused, and only a parser created by this mode is deleted on disable. Very large, heading-heavy files can still be slow: a local 100,000-line stress test with 25,000 headings took roughly half a second per heading edit in the parser alone, without this mode.
+
+Tables keep source spacing rather than calculate column widths. Glyph availability and mixed-pitch alignment depend on your fonts; use faces-only display if necessary. No folding, indentation, syntax-specific editing, embedded-language highlighting, or indirect-buffer coordination is provided. GUI typography has not yet been visually verified; automated checks validate properties and edit behavior, not font rendering.
+
+* Development
+
+#+begin_src sh
+make check                    # strict byte compilation, checkdoc, ERT
+make benchmark                # three runs at 1k, 10k, and 100k lines
+# If the grammar is not on Emacs -Q's search path:
+DJOT_GRAMMAR_DIR=/path/to/tree-sitter make check benchmark
+make clean
+#+end_src
+
+The tests require a real grammar and fail rather than skip when it is missing. Benchmarks print Emacs/grammar ABI, GC settings, and median/worst wall times for initial rendering and inline, fence, and table edits; timings include parsing and garbage collection, not GUI redisplay. =EMACS= selects the executable and =DJOT_BENCH_RUNS= changes the repetition count.
+
+* License
+
+GPL-3.0-or-later; see [[file:LICENSE][LICENSE]]. Independently implemented by Jay Bonthius, with design inspiration from org-modern and syntax recognition supplied by tree-sitter-djot.

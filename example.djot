@@ -1,0 +1,93 @@
+# A quieter page
+
+Djot stays Djot. Edit the markers, select a sentence, copy the source, or toggle djot-modern-mode to compare the original display.
+
+## Words with texture
+
+A little _emphasis_, a *strong* opinion, a {=highlight=}, an {+addition+}, and a {-deletion-}. Water is H~2~O and a square is x^2^. Inline `code *stays literal*` and $`x + y` keep their punctuation.
+
+Visit [the Djot reference](https://djot.net) or <https://djot.net>. A [quiet span]{.note} carries attributes without losing its source.
+
+## Small commitments
+
+- Read the page
+- [x] Keep source editable
+- [ ] Choose a favorite theme
+
+1. Start with a plain buffer.
+2. Enable the minor mode.
+3. Toggle back whenever you need to.
+
+- A parent item
+
+  - A nested bullet
+  - Another detail
+
+: term
+
+  A definition stays close to its name.
+
+## A borrowed thought
+
+> Good typography gives the words room.
+>
+> - It does not rewrite them.
+> - It does not hide what you are editing.
+
+### Working notes
+### continued on a second line
+
+The heading hierarchy is deliberately small.
+
+#### A detail
+
+##### A quieter detail
+
+###### The smallest heading level
+
+## Code, not decoration
+
+```elisp
+(message "Hello, Djot")
+;; # Not a heading
+;; *Not strong* and | not a table |
+```
+
+````text
+A fence may contain ``` shorter backticks.
+- [x] This is still literal text.
+````
+
+```=html
+<span>*Raw text* is opaque.</span>
+```
+
+::: note
+This div has visible, muted fences.
+:::
+
+## A modest table
+
+| Element | Purpose |
+| ------- | ------- |
+| Heading | A place to begin |
+| `x|y` | A literal pipe |
+| a\|b | An escaped pipe |
+
+^ Source spacing, not a layout engine.
+
+***
+
+## Literal punctuation
+
+Escaped \*stars\* and \_underscores\_ stay plain. A backslash protects a table pipe: \|. `# headings` do not appear inside verbatim text.
+
+A reference [link][reference] and a footnote[^note] remain readable source.
+
+[reference]: https://djot.net
+
+[^note]: This is a footnote, not a popup.
+
+## Work in progress
+
+An *unfinished delimiter is ordinary editing, not an error dialog.
