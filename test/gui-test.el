@@ -45,6 +45,70 @@
       (should (> sub body))
       (should (< sup sub)))))
 
+(ert-deftest djot-modern-gui-initial-code-background ()
+  (should (display-graphic-p))
+  (dolist (displayed-first '(t nil))
+    (ert-info ((format "Activate %s first display" (if displayed-first "after" "before")))
+      (save-window-excursion
+        (djot-modern-test--buffer "Ordinary prose.\n\n```elisp\n(defun hello () (+ 1 2))\n```\n"
+          (let ((source (buffer-string))
+                (position (point))
+                (tick (buffer-chars-modified-tick))
+                (code (djot-modern-test--position "defun"))
+                (height (face-attribute 'fixed-pitch :height))
+                (themes custom-enabled-themes)
+                (foreign (make-overlay 1 2)))
+            (overlay-put foreign 'help-echo "foreign")
+            (buffer-enable-undo) (setq buffer-undo-list nil)
+            (cl-labels
+                ((settle () (redisplay t) (sit-for 0.1) (redisplay t))
+                 (shaded ()
+                   (settle)
+                   (should (stringp djot-modern--block-background))
+                   (should-not (equal djot-modern--block-background
+                                      (face-background 'default nil t)))
+                   (should (cl-some
+                            (lambda (overlay)
+                              (equal (overlay-get overlay 'face)
+                                     `(:background ,djot-modern--block-background :extend t)))
+                            (djot-modern-test--owned code)))
+                   (should (memq 'font-lock-keyword-face (get-text-property code 'face)))))
+              (unwind-protect
+                  (progn
+                    (when displayed-first (switch-to-buffer (current-buffer)) (settle))
+                    (should (eq (not (null (get-buffer-window))) displayed-first))
+                    (should-not djot-modern--block-background)
+                    (djot-modern-mode 1)
+                    (unless displayed-first (switch-to-buffer (current-buffer)))
+                    (shaded)
+                    (let ((metrics djot-modern--metrics))
+                      (shaded)
+                      (should (eq metrics djot-modern--metrics)))
+                    (when (fboundp 'djot-modern-gui--capture)
+                      (djot-modern-gui--capture
+                       (format "initial-code-background-%s.png" (if displayed-first "displayed" "undisplayed"))))
+                    (djot-modern-mode -1) (settle)
+                    (should-not (djot-modern-test--owned code))
+                    (djot-modern-mode 1) (shaded)
+                    (set-face-attribute 'fixed-pitch nil :height 180) (shaded)
+                    (let (background)
+                      (dolist (theme '(modus-operandi-tinted modus-vivendi-tinted))
+                        (mapc #'disable-theme custom-enabled-themes)
+                        (load-theme theme t)
+                        (shaded)
+                        (when background
+                          (should-not (equal background djot-modern--block-background)))
+                        (setq background djot-modern--block-background)))
+                    (should (= position (point)))
+                    (should (= tick (buffer-chars-modified-tick)))
+                    (should (equal source (buffer-string)))
+                    (should-not buffer-undo-list)
+                    (should-not (buffer-modified-p))
+                    (should (equal "foreign" (overlay-get foreign 'help-echo))))
+                (mapc #'disable-theme custom-enabled-themes)
+                (mapc (lambda (theme) (load-theme theme t)) (reverse themes))
+                (set-face-attribute 'fixed-pitch nil :height height)))))))))
+
 (ert-deftest djot-modern-gui-table-pixels-and-incremental-edit ()
   (djot-modern-gui-test--buffer
       "| Key | Value |\n|-----|-------|\n| short | longer words |\n| `x|y` | a\\|b |\n\n[site](https://djot.net)\n"

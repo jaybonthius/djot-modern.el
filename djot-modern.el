@@ -507,6 +507,8 @@ reuse another frame's absolute padding.  Undisplayed buffers need no layout."
 Track every view so selecting a frame cannot alternate shared geometry.
 Also detect first display, new views, closed windows and font/theme changes."
   (let* ((windows (get-buffer-window-list (current-buffer) nil t))
+         ;; Activation has no WINDOW argument, but may already have a view.
+         (window (or window (car windows)))
          (metrics (mapcar #'djot-modern--window-metrics windows)))
     (unless (equal metrics djot-modern--metrics)
       (setq djot-modern--metrics metrics)
