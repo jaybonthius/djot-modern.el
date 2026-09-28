@@ -141,6 +141,8 @@ Moving point never reveals markers automatically."
 (defvar djot-modern-mode)
 (defvar djot-modern--beg)
 (defvar djot-modern--end)
+(defvar djot-modern--window nil
+  "Window owning dynamically measured table decorations, or nil.")
 
 (defun djot-modern--clear (beg end &optional all)
   "Clear our overlays in BEG END, preserving outside portions.
@@ -177,6 +179,8 @@ Display replacements are atomic and never override foreign displays."
       (when (< beg end)
         (let ((overlay (make-overlay beg end nil t nil)))
           (overlay-put overlay 'djot-modern t)
+          (when djot-modern--window
+            (overlay-put overlay 'window djot-modern--window))
           (overlay-put overlay 'evaporate t)
           ;; Native code and semantic text properties supply foregrounds.
           ;; Secondary priority lets explicit foreign overlays win.
@@ -311,92 +315,99 @@ An empty cell has equal bounds and need not have a named syntax node."
                          (treesit-node-start (cadr tail)))))
 
 (defun djot-modern--table (node)
-  "Present the parsed table NODE with padded, pixel-aligned thin rules.
-Only grammar-provided pipe tokens are decorated: literal or escaped
-pipes in cell contents are never mistaken for table boundaries."
+  "Style NODE and measure its geometry independently in each live window.
+Pixel decorations are window-local: a differently sized frame must never
+reuse another frame's absolute padding.  Undisplayed buffers need no layout."
   (djot-modern--face node 'djot-modern-table)
-  (when (and (display-graphic-p) djot-modern-replace-markers
-             (not djot-source-visible))
-    (let* ((rows (cl-remove-if-not
-                  (lambda (n) (member (treesit-node-type n)
-                                      '("table_row" "table_header" "table_separator")))
-                  (djot-node-children node)))
-           (widths (make-vector (apply #'max 0 (mapcar (lambda (n)
+  (when (and djot-modern-replace-markers (not djot-source-visible))
+    (dolist (window (get-buffer-window-list (current-buffer) nil t))
+      (when (display-graphic-p (window-frame window))
+        (with-selected-window window
+          (let ((djot-modern--window window))
+            (djot-modern--table-layout node)))))))
+
+(defun djot-modern--table-layout (node)
+  "Lay out NODE for the selected window using parser-provided cell bounds."
+  (let* ((rows (cl-remove-if-not
+                (lambda (n) (member (treesit-node-type n)
+                                    '("table_row" "table_header" "table_separator")))
+                (djot-node-children node)))
+         (widths (make-vector (apply #'max 0 (mapcar (lambda (n)
                                                        (length (djot-modern--table-cells n))) rows)) 0))
-           (unit (djot-modern--text-width (propertize " " 'face 'djot-modern-table)))
-           (pad (* djot-modern-table-padding unit))
-           (rule djot-modern-table-vertical)
-           (rule-face '(:inherit djot-modern-table-rule :inverse-video t))
-           alignments)
-      (dolist (row rows)
-        (unless (equal (treesit-node-type row) "table_separator")
-          (cl-loop for cell in (djot-modern--table-cells row) for col from 0 do
-                   (let* ((text (string-trim (djot-modern--cell-text (car cell) (cdr cell))))
-                          (width (djot-modern--text-width text)))
-                     (aset widths col (max (aref widths col) width))))))
-      (cl-loop for tail on rows for row = (car tail) do
-        (when-let* ((separator (if (equal (treesit-node-type row) "table_separator") row
-                                (when (and (cadr tail)
-                                           (equal (treesit-node-type (cadr tail)) "table_separator"))
-                                  (cadr tail)))))
-          (setq alignments
-                (mapcar (lambda (cell)
-                          (let ((text (treesit-node-text cell t)))
-                            (cond ((and (string-prefix-p ":" text) (string-suffix-p ":" text)) 'center)
-                                  ((string-suffix-p ":" text) 'right)
-                                  (t 'left))))
-                        (djot-node-children separator))))
-        (let* ((separator (equal (treesit-node-type row) "table_separator"))
-               (cells (djot-modern--table-cells row))
-               (pipes (djot-modern--table-pipes row))
-               (x (save-excursion
-                    (goto-char (treesit-node-start row))
-                    (djot-modern--text-width
-                     (propertize (buffer-substring-no-properties (line-beginning-position) (point))
-                                 'face 'djot-modern-table)))))
-          (when separator
-            (djot-modern--overlay (treesit-node-start row) (treesit-node-end row)
-                                  'face `(:height ,djot-modern-table-horizontal)))
-          (cl-loop for pipe in pipes for col from 0 do
-                   (djot-modern--overlay
-                    (treesit-node-start pipe) (treesit-node-end pipe)
-                    'before-string (propertize " " 'display `(space :align-to (,x))
-                                                'face (when separator `(:height ,djot-modern-table-horizontal)))
-                    'display `(space :width (,rule))
-                    'face (if separator (append `(:height ,djot-modern-table-horizontal) rule-face) rule-face))
-                   (when (< col (length widths))
-                     (let* ((cell (nth col cells))
-                            (beg (if cell (car cell) (treesit-node-end pipe)))
-                            (end (if cell (cdr cell) beg))
-                            (next-x (+ x rule pad (aref widths col) pad)))
-                       (when separator
-                         (djot-modern--overlay
-                          beg end 'display `(space :align-to (,next-x))
-                          'face `(:height ,djot-modern-table-horizontal
-                                  :inherit djot-modern-table-rule :overline t)))
-                       (unless separator
-                         ;; Source cell whitespace is the padding carrier.
-                         ;; With no whitespace, a before-string adds padding
-                         ;; without replacing or reparenting any cell text.
-                         (save-excursion
-                           (goto-char beg)
-                           (skip-chars-forward " \t" end)
-                           (let ((trim-beg (point)))
-                             (goto-char end)
-                             (skip-chars-backward " \t" trim-beg)
-                             (let* ((trim-end (point))
-                                    (width (djot-modern--text-width (djot-modern--cell-text trim-beg trim-end)))
-                                    (extra (max 0 (- (aref widths col) width)))
-                                    (left-pad (+ pad (pcase (nth col alignments)
-                                                       ('right extra) ('center (/ extra 2)) (_ 0))))
-                                    (padding (propertize " " 'display `(space :width (,left-pad)))))
-                               (if (< beg trim-beg)
-                                   (djot-modern--overlay beg trim-beg 'display `(space :width (,left-pad)))
-                                 (when (< beg end)
-                                   (djot-modern--overlay beg (1+ beg) 'before-string padding)))
-                               (when (< trim-end end)
-                                 (djot-modern--overlay trim-end end 'display ""))))))
-                       (setq x next-x)))))))))
+         (unit (djot-modern--text-width (propertize " " 'face 'djot-modern-table)))
+         (pad (* djot-modern-table-padding unit))
+         (rule djot-modern-table-vertical)
+         (rule-face '(:inherit djot-modern-table-rule :inverse-video t))
+         alignments)
+    (dolist (row rows)
+      (unless (equal (treesit-node-type row) "table_separator")
+        (cl-loop for cell in (djot-modern--table-cells row) for col from 0 do
+                 (let* ((text (string-trim (djot-modern--cell-text (car cell) (cdr cell))))
+                        (width (djot-modern--text-width text)))
+                   (aset widths col (max (aref widths col) width))))))
+    (cl-loop for tail on rows for row = (car tail) do
+             (when-let* ((separator (if (equal (treesit-node-type row) "table_separator") row
+                                      (when (and (cadr tail)
+						 (equal (treesit-node-type (cadr tail)) "table_separator"))
+					(cadr tail)))))
+               (setq alignments
+                     (mapcar (lambda (cell)
+                               (let ((text (treesit-node-text cell t)))
+				 (cond ((and (string-prefix-p ":" text) (string-suffix-p ":" text)) 'center)
+                                       ((string-suffix-p ":" text) 'right)
+                                       (t 'left))))
+                             (djot-node-children separator))))
+             (let* ((separator (equal (treesit-node-type row) "table_separator"))
+		    (cells (djot-modern--table-cells row))
+		    (pipes (djot-modern--table-pipes row))
+		    (x (save-excursion
+			 (goto-char (treesit-node-start row))
+			 (djot-modern--text-width
+			  (propertize (buffer-substring-no-properties (line-beginning-position) (point))
+                                      'face 'djot-modern-table)))))
+               (when separator
+		 (djot-modern--overlay (treesit-node-start row) (treesit-node-end row)
+                                       'face `(:height ,djot-modern-table-horizontal)))
+               (cl-loop for pipe in pipes for col from 0 do
+			(djot-modern--overlay
+			 (treesit-node-start pipe) (treesit-node-end pipe)
+			 'before-string (propertize " " 'display `(space :align-to (,x))
+                                                    'face (when separator `(:height ,djot-modern-table-horizontal)))
+			 'display `(space :width (,rule))
+			 'face (if separator (append `(:height ,djot-modern-table-horizontal) rule-face) rule-face))
+			(when (< col (length widths))
+			  (let* ((cell (nth col cells))
+				 (beg (if cell (car cell) (treesit-node-end pipe)))
+				 (end (if cell (cdr cell) beg))
+				 (next-x (+ x rule pad (aref widths col) pad)))
+			    (when separator
+                              (djot-modern--overlay
+                               beg end 'display `(space :align-to (,next-x))
+                               'face `(:height ,djot-modern-table-horizontal
+					       :inherit djot-modern-table-rule :overline t)))
+			    (unless separator
+                              ;; Source cell whitespace is the padding carrier.
+                              ;; With no whitespace, a before-string adds padding
+                              ;; without replacing or reparenting any cell text.
+                              (save-excursion
+				(goto-char beg)
+				(skip-chars-forward " \t" end)
+				(let ((trim-beg (point)))
+				  (goto-char end)
+				  (skip-chars-backward " \t" trim-beg)
+				  (let* ((trim-end (point))
+					 (width (djot-modern--text-width (djot-modern--cell-text trim-beg trim-end)))
+					 (extra (max 0 (- (aref widths col) width)))
+					 (left-pad (+ pad (pcase (nth col alignments)
+							    ('right extra) ('center (/ extra 2)) (_ 0))))
+					 (padding (propertize " " 'display `(space :width (,left-pad)))))
+				    (if (< beg trim-beg)
+					(djot-modern--overlay beg trim-beg 'display `(space :width (,left-pad)))
+                                      (when (< beg end)
+					(djot-modern--overlay beg (1+ beg) 'before-string padding)))
+				    (when (< trim-end end)
+                                      (djot-modern--overlay trim-end end 'display ""))))))
+			    (setq x next-x))))))))
 
 (defun djot-modern--quoted-p (node)
   "Return non-nil when NODE is inside a block quote."
@@ -483,22 +494,30 @@ pipes in cell contents are never mistaken for table boundaries."
     (when-let* ((table (or (djot-node-at beg "table") (djot-node-at end "table"))))
       (font-lock-flush (treesit-node-start table) (treesit-node-end table)))))
 
-(defun djot-modern--pre-redisplay (_windows)
-  "Refresh frame-dependent layout when the theme or font changed."
-  (let ((metrics (list (display-graphic-p) (face-font 'fixed-pitch)
-                       (face-font 'djot-modern-table)
-                       (face-font 'default) (frame-char-height)
-                       (face-attribute 'djot-modern-table-rule :foreground nil t)
-                       (face-background 'default nil t) (face-foreground 'default nil t))))
+(defun djot-modern--window-metrics (window)
+  "Return the frame-dependent layout signature for WINDOW."
+  (with-selected-window window
+    (list window (display-graphic-p) (face-font 'fixed-pitch)
+          (face-font 'djot-modern-table) (face-font 'default) (frame-char-height)
+          (face-attribute 'djot-modern-table-rule :foreground nil t)
+          (face-background 'default nil t) (face-foreground 'default nil t))))
+
+(defun djot-modern--pre-redisplay (window)
+  "Refresh frame-dependent layout before redisplaying WINDOW.
+Track every view so selecting a frame cannot alternate shared geometry.
+Also detect first display, new views, closed windows and font/theme changes."
+  (let* ((windows (get-buffer-window-list (current-buffer) nil t))
+         (metrics (mapcar #'djot-modern--window-metrics windows)))
     (unless (equal metrics djot-modern--metrics)
-      (setq djot-modern--metrics metrics
-            djot-modern--block-background
-            (when (display-graphic-p)
-              (let ((bg (color-name-to-rgb (face-background 'default nil t)))
-                    (fg (color-name-to-rgb (face-foreground 'default nil t))))
-                (when (and bg fg)
-                  (apply #'color-rgb-to-hex
-                         (cl-mapcar (lambda (b f) (+ (* 0.96 b) (* 0.04 f))) bg fg))))))
+      (setq djot-modern--metrics metrics)
+      (when (and (window-live-p window) (display-graphic-p (window-frame window)))
+        (with-selected-window window
+          (setq djot-modern--block-background
+                (let ((bg (color-name-to-rgb (face-background 'default nil t)))
+                      (fg (color-name-to-rgb (face-foreground 'default nil t))))
+                  (when (and bg fg)
+                    (apply #'color-rgb-to-hex
+                           (cl-mapcar (lambda (b f) (+ (* 0.96 b) (* 0.04 f))) bg fg)))))))
       (font-lock-flush))))
 
 (defun djot-modern--font-lock-change ()
