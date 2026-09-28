@@ -251,6 +251,10 @@
                 (djot-modern-mode 1) (aligned "reenabled")
                 (mapc #'disable-theme custom-enabled-themes)
                 (load-theme 'modus-operandi-tinted t)
+                ;; Loading a theme resets frame-local faces; restore distinct
+                ;; metrics so the edit/undo phases still exercise both layouts.
+                (set-face-attribute 'fixed-pitch first :height 150)
+                (set-face-attribute 'fixed-pitch second :height 220)
                 (aligned "theme-changed")
                 (djot-preview-math t) (aligned "theme-previews")
                 (should (overlay-buffer foreign))
