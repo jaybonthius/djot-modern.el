@@ -264,17 +264,30 @@ Display replacements are atomic and never override foreign displays."
         (djot-modern--overlay beg (1+ beg) 'display " ")
         (djot-modern--overlay (1- end) end 'display " ")))))
 
+(defun djot-modern--cell-property (position property)
+  "Return the effective non-modern PROPERTY at POSITION.
+Follow Emacs overlay priority, falling back to the text property."
+  (or (cl-loop for overlay in (overlays-at position t)
+               unless (overlay-get overlay 'djot-modern)
+               thereis (overlay-get overlay property))
+      (get-text-property position property)))
+
 (defun djot-modern--cell-text (beg end)
   "Return the displayed text of a table cell between BEG and END.
-Copy base invisibility into the measurement string; do not copy any
-modern layout overlays or alter the buffer."
-  (let ((text (buffer-substring beg end)))
-    (dolist (ov (overlays-in beg end))
-      (when (and (not (overlay-get ov 'djot-modern))
-                 (invisible-p (overlay-get ov 'invisible)))
-        (put-text-property (max 0 (- (overlay-start ov) beg))
-                           (min (- end beg) (- (overlay-end ov) beg))
-                           'invisible t text)))
+Copy effective foreign replacement displays and invisibility into the
+measurement string, clipped to the cell.  Never copy modern layout
+padding/rules or modify another package's overlays or text properties."
+  (let ((text (buffer-substring beg end)) (position beg))
+    (while (< position end)
+      (let* ((next (min end (next-overlay-change position)
+                        (next-single-property-change position 'display nil end)
+                        (next-single-property-change position 'invisible nil end)))
+             (display (djot-modern--cell-property position 'display))
+             (invisible (djot-modern--cell-property position 'invisible)))
+        (put-text-property (- position beg) (- next beg) 'display display text)
+        (put-text-property (- position beg) (- next beg) 'invisible
+                           (and (invisible-p invisible) t) text)
+        (setq position next)))
     ;; string-pixel-width uses a temporary buffer, so make the technical
     ;; family explicit rather than depending on its default face remap.
     (add-face-text-property 0 (length text) 'djot-modern-table t text)

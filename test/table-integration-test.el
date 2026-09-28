@@ -44,5 +44,28 @@
         (djot-table-align)
         (should (equal aligned (buffer-substring-no-properties (point-min) (point-max))))))))
 
+(ert-deftest djot-modern-cell-measurement-respects-foreign-priority ()
+  (djot-modern-test--buffer "| abcdef | x |\n"
+    (let ((low (make-overlay 2 10)) (high (make-overlay 4 8))
+          (own (make-overlay 3 9)))
+      (overlay-put low 'display "low")
+      (overlay-put low 'priority 10)
+      (overlay-put high 'display "highest")
+      (overlay-put high 'priority 20)
+      (overlay-put high 'invisible 'foreign-hidden)
+      (add-to-invisibility-spec 'foreign-hidden)
+      (overlay-put own 'djot-modern t)
+      (overlay-put own 'display "excluded padding")
+      (overlay-put own 'priority 100)
+      (let ((text (djot-modern--cell-text 3 9)))
+        (should (= 6 (length text)))
+        (should (equal "low" (get-text-property 0 'display text)))
+        (should (equal "highest" (get-text-property 1 'display text)))
+        (should (get-text-property 1 'invisible text))
+        (should (equal "low" (get-text-property 5 'display text))))
+      (should (equal "highest" (overlay-get high 'display)))
+      (should (equal '(4 . 8) (cons (overlay-start high) (overlay-end high))))
+      (should (equal "low" (overlay-get low 'display))))))
+
 (provide 'table-integration-test)
 ;;; table-integration-test.el ends here
